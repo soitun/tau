@@ -11,13 +11,13 @@ import (
 	commonIface "github.com/taubyte/tau/core/common"
 	"github.com/taubyte/tau/dream"
 	commonTest "github.com/taubyte/tau/dream/helpers"
-	"github.com/taubyte/tau/pkg/config-compiler/decompile"
 	structureSpec "github.com/taubyte/tau/pkg/specs/structure"
 	"github.com/taubyte/tau/services/monkey/fixtures/compile"
+	tcc "github.com/taubyte/tau/utils/tcc"
 	"gotest.tools/v3/assert"
 
 	_ "github.com/taubyte/tau/dream/fixtures"
-	_ "github.com/taubyte/tau/pkg/config-compiler/fixtures"
+	_ "github.com/taubyte/tau/pkg/tcc/taubyte/v1/fixtures"
 	_ "github.com/taubyte/tau/services/auth/dream"
 	_ "github.com/taubyte/tau/services/hoarder/dream"
 	_ "github.com/taubyte/tau/services/patrick/dream"
@@ -63,11 +63,14 @@ func TestBasicWithLibrary(t *testing.T) {
 	})
 	assert.NilError(t, err)
 
-	project, err := decompile.MockBuild(testProjectId, "",
+	fs, _, err := tcc.GenerateProject(testProjectId,
 		&structureSpec.Library{
-			Id:   testLibraryId,
-			Name: "someLibrary",
-			Path: "/",
+			Id:       testLibraryId,
+			Name:     "someLibrary",
+			Path:     "/",
+			Provider: "github",
+			RepoID:   "123456",
+			RepoName: "test/library",
 		},
 		&structureSpec.Function{
 			Id:      testFunctionId,
@@ -86,15 +89,18 @@ func TestBasicWithLibrary(t *testing.T) {
 			Fqdn: "hal.computers.com",
 		},
 		&structureSpec.Website{
-			Id:      testWebsiteId,
-			Name:    "someWebsite",
-			Domains: []string{"someDomain"},
-			Paths:   []string{"/"},
+			Id:       testWebsiteId,
+			Name:     "someWebsite",
+			Domains:  []string{"someDomain"},
+			Paths:    []string{"/"},
+			Provider: "github",
+			RepoID:   "123456",
+			RepoName: "test/website",
 		},
 	)
 	assert.NilError(t, err)
 
-	err = u.RunFixture("injectProject", project)
+	err = u.RunFixture("injectProject", fs)
 	if err != nil {
 		t.Error(err)
 		return

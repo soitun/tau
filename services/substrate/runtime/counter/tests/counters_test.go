@@ -16,14 +16,14 @@ import (
 	_ "github.com/taubyte/tau/clients/p2p/hoarder/dream"
 	_ "github.com/taubyte/tau/clients/p2p/tns/dream"
 	_ "github.com/taubyte/tau/dream/fixtures"
-	"github.com/taubyte/tau/pkg/config-compiler/decompile"
-	_ "github.com/taubyte/tau/pkg/config-compiler/fixtures"
+	_ "github.com/taubyte/tau/pkg/tcc/taubyte/v1/fixtures"
 	_ "github.com/taubyte/tau/services/hoarder/dream"
 	"github.com/taubyte/tau/services/monkey/fixtures/compile"
 	_ "github.com/taubyte/tau/services/seer/dream"
 	_ "github.com/taubyte/tau/services/substrate/dream"
 	mockCounter "github.com/taubyte/tau/services/substrate/mocks/counters"
 	_ "github.com/taubyte/tau/services/tns/dream"
+	tcc "github.com/taubyte/tau/utils/tcc"
 )
 
 var (
@@ -74,7 +74,7 @@ func TestCounters(t *testing.T) {
 	})
 	assert.NilError(t, err)
 
-	project, err := decompile.MockBuild(projectId, "",
+	fs, _, err := tcc.GenerateProject(projectId,
 		&structureSpec.Function{
 			Id:      functionId,
 			Name:    "testFunc",
@@ -94,7 +94,7 @@ func TestCounters(t *testing.T) {
 	)
 	assert.NilError(t, err)
 
-	err = u.RunFixture("injectProject", project)
+	err = u.RunFixture("injectProject", fs)
 	assert.NilError(t, err)
 
 	wd, err := os.Getwd()

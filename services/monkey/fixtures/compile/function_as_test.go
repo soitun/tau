@@ -9,13 +9,13 @@ import (
 	commonIface "github.com/taubyte/tau/core/common"
 	"github.com/taubyte/tau/dream"
 	_ "github.com/taubyte/tau/dream/fixtures"
-	"github.com/taubyte/tau/pkg/config-compiler/decompile"
-	_ "github.com/taubyte/tau/pkg/config-compiler/fixtures"
 	structureSpec "github.com/taubyte/tau/pkg/specs/structure"
+	_ "github.com/taubyte/tau/pkg/tcc/taubyte/v1/fixtures"
 	"github.com/taubyte/tau/services/monkey/fixtures/compile"
 	_ "github.com/taubyte/tau/services/seer/dream"
 	_ "github.com/taubyte/tau/services/substrate/dream"
 	_ "github.com/taubyte/tau/services/tns/dream"
+	tcc "github.com/taubyte/tau/utils/tcc"
 	"gotest.tools/v3/assert"
 )
 
@@ -49,7 +49,7 @@ func TestASFunction(t *testing.T) {
 		return
 	}
 
-	project, err := decompile.MockBuild(testProjectId, "",
+	fs, _, err := tcc.GenerateProject(testProjectId,
 		&structureSpec.Function{
 			Id:      testFunctionId,
 			Name:    "someFunc",
@@ -72,7 +72,7 @@ func TestASFunction(t *testing.T) {
 		return
 	}
 
-	err = u.RunFixture("injectProject", project)
+	err = u.RunFixture("injectProject", fs)
 	if err != nil {
 		t.Error(err)
 		return

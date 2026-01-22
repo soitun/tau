@@ -4,17 +4,18 @@ import (
 	"os"
 	"path"
 	"testing"
+	"time"
 
 	_ "github.com/taubyte/tau/clients/p2p/hoarder/dream"
 	_ "github.com/taubyte/tau/clients/p2p/tns/dream"
 	commonIface "github.com/taubyte/tau/core/common"
 	"github.com/taubyte/tau/dream"
-	"github.com/taubyte/tau/pkg/config-compiler/decompile"
-	_ "github.com/taubyte/tau/pkg/config-compiler/fixtures"
 	structureSpec "github.com/taubyte/tau/pkg/specs/structure"
+	_ "github.com/taubyte/tau/pkg/tcc/taubyte/v1/fixtures"
 	"github.com/taubyte/tau/services/monkey/fixtures/compile"
 	_ "github.com/taubyte/tau/services/substrate/dream"
 	_ "github.com/taubyte/tau/services/tns/dream"
+	tcc "github.com/taubyte/tau/utils/tcc"
 	"gotest.tools/v3/assert"
 )
 
@@ -46,7 +47,7 @@ func TestZWasmFunction(t *testing.T) {
 		return
 	}
 
-	project, err := decompile.MockBuild(testProjectId, "",
+	fs, _, err := tcc.GenerateProject(testProjectId,
 		&structureSpec.Function{
 			Id:      testFunctionId,
 			Name:    "someFunc",
@@ -66,7 +67,7 @@ func TestZWasmFunction(t *testing.T) {
 	)
 	assert.NilError(t, err)
 
-	err = u.RunFixture("injectProject", project)
+	err = u.RunFixture("injectProject", fs)
 	assert.NilError(t, err)
 
 	wd, err := os.Getwd()
@@ -77,6 +78,9 @@ func TestZWasmFunction(t *testing.T) {
 		ResourceId: testFunctionId,
 		Paths:      []string{path.Join(wd, "assets", "ping.zwasm")},
 	})
+	assert.NilError(t, err)
+
+	err = waitForFunctionInTNS(u, "hal.computers.com", 30, 500*time.Millisecond)
 	assert.NilError(t, err)
 
 	body, err := callHal(u, "/ping")

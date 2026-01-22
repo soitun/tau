@@ -14,9 +14,8 @@ import (
 	commonIface "github.com/taubyte/tau/core/common"
 	nodeIface "github.com/taubyte/tau/core/services/substrate"
 	"github.com/taubyte/tau/dream"
-	"github.com/taubyte/tau/pkg/config-compiler/decompile"
-	_ "github.com/taubyte/tau/pkg/config-compiler/fixtures"
 	structureSpec "github.com/taubyte/tau/pkg/specs/structure"
+	_ "github.com/taubyte/tau/pkg/tcc/taubyte/v1/fixtures"
 	_ "github.com/taubyte/tau/services/hoarder/dream"
 	"github.com/taubyte/tau/services/monkey/fixtures/compile"
 	_ "github.com/taubyte/tau/services/seer/dream"
@@ -24,6 +23,7 @@ import (
 	_ "github.com/taubyte/tau/services/substrate/dream"
 	_ "github.com/taubyte/tau/services/tns/dream"
 	"github.com/taubyte/tau/utils/id"
+	tcc "github.com/taubyte/tau/utils/tcc"
 	"gotest.tools/v3/assert"
 )
 
@@ -99,7 +99,7 @@ func TestFail(t *testing.T) {
 			return
 		}
 
-		project, err := decompile.MockBuild(id.Generate(), "/tmp/TestFail_config",
+		fs, project, err := tcc.GenerateProject(id.Generate(),
 			&structureSpec.Service{
 				Name:     "someService",
 				Protocol: "/testproto/v1",
@@ -121,7 +121,7 @@ func TestFail(t *testing.T) {
 			return
 		}
 
-		err = u.RunFixture("injectProject", project)
+		err = u.RunFixture("injectProject", fs)
 		if err != nil {
 			mostRecentError = err
 			return

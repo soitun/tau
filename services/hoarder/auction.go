@@ -15,9 +15,7 @@ import (
 func (srv *Service) auctionNew(ctx context.Context, auction *hoarderIface.Auction, msg *pubsub.Message) error {
 	srv.startAuction(ctx, auction)
 
-	// Check if we have that actionId stored with the action
 	if found := srv.checkValidAction(auction.Meta.Match, hoarderIface.AuctionNew, msg.ReceivedFrom.String()); !found {
-		// Generate Lottery number and publish our intent to join the lottery
 		auction.Lottery.HoarderId = srv.node.ID().String()
 
 		arr := make([]byte, 8)
@@ -33,13 +31,11 @@ func (srv *Service) auctionNew(ctx context.Context, auction *hoarderIface.Auctio
 		}
 	}
 
-	// Store the new action and register our entry inside the auction pool
 	srv.saveAction(auction)
 	return nil
 }
 
 func (srv *Service) startAuction(ctx context.Context, action *hoarderIface.Auction) {
-	// Start a countdown for the new action
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -54,9 +50,17 @@ func (srv *Service) startAuction(ctx context.Context, action *hoarderIface.Aucti
 }
 
 func (srv *Service) auctionEnd(ctx context.Context, auction *hoarderIface.Auction, msg *pubsub.Message) error {
+	poolKey := auction.Meta.ConfigId + auction.Meta.Match
+	pool := srv.lotteryPool[poolKey]
+
 	var winner *hoarderIface.Auction
 	var currentBiggest uint64
-	for _, lottery := range srv.lotteryPool[auction.Meta.ConfigId+auction.Meta.Match] {
+	allParticipants := make([]map[string]interface{}, 0, len(pool))
+	for _, lottery := range pool {
+		allParticipants = append(allParticipants, map[string]interface{}{
+			"hoarderId":     lottery.Lottery.HoarderId,
+			"lotteryNumber": lottery.Lottery.Number,
+		})
 		if lottery.Lottery.Number > currentBiggest {
 			winner = lottery
 			currentBiggest = lottery.Lottery.Number
@@ -67,7 +71,6 @@ func (srv *Service) auctionEnd(ctx context.Context, auction *hoarderIface.Auctio
 		return errors.New("no winner was selected")
 	}
 
-	// Self evaluate to check if we won or not
 	if winner.Lottery.HoarderId == srv.node.Peer().ID().String() {
 		err := srv.storeAuction(ctx, auction)
 		if err != nil {
@@ -75,26 +78,25 @@ func (srv *Service) auctionEnd(ctx context.Context, auction *hoarderIface.Auctio
 		}
 	}
 
-	// Do I need to do this, probably not but just in case
-	srv.lotteryPool[auction.Meta.ConfigId+auction.Meta.Match] = nil
+	srv.lotteryPool[poolKey] = nil
 	return nil
 }
 
 func (srv *Service) auctionIntent(auction *hoarderIface.Auction, msg *pubsub.Message) error {
-	// If we see that the node already reported intent to stash on action Id we ignore it
 	if found := srv.checkValidAction(auction.Meta.Match, hoarderIface.AuctionIntent, msg.ReceivedFrom.String()); found {
 		return fmt.Errorf("%s already reported an intent", msg.ReceivedFrom.String())
 	}
 
-	// Generate lottery pool
 	srv.regLock.Lock()
 	defer srv.regLock.Unlock()
-	pool, ok := srv.lotteryPool[auction.Meta.ConfigId+auction.Meta.Match]
+	poolKey := auction.Meta.ConfigId + auction.Meta.Match
+	pool, ok := srv.lotteryPool[poolKey]
 	if !ok {
-		return fmt.Errorf("did not find lottery pool for %s", auction.Meta.ConfigId+auction.Meta.Match)
+		return fmt.Errorf("did not find lottery pool for %s", poolKey)
 	}
 
 	pool = append(pool, auction)
-	srv.lotteryPool[auction.Meta.ConfigId+auction.Meta.Match] = pool
+	srv.lotteryPool[poolKey] = pool
+
 	return nil
 }

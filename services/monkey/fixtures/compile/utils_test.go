@@ -8,6 +8,10 @@ import (
 
 	"github.com/taubyte/tau/dream"
 	commonTest "github.com/taubyte/tau/dream/helpers"
+	"github.com/taubyte/tau/pkg/specs/common"
+	functionSpec "github.com/taubyte/tau/pkg/specs/function"
+	"github.com/taubyte/tau/pkg/specs/methods"
+	websiteSpec "github.com/taubyte/tau/pkg/specs/website"
 )
 
 var (
@@ -37,7 +41,6 @@ func callHal(u *dream.Universe, path string) ([]byte, error) {
 	return io.ReadAll(ret.Body)
 }
 
-// callHalWithRetry attempts to call the website with retries to handle timing issues
 func callHalWithRetry(u *dream.Universe, path string, maxRetries int, retryDelay time.Duration) ([]byte, error) {
 	var lastErr error
 
@@ -48,8 +51,6 @@ func callHalWithRetry(u *dream.Universe, path string, maxRetries int, retryDelay
 		}
 
 		lastErr = err
-
-		// Only retry if it's a lookup error, not a connection error
 		if !isLookupError(err) {
 			return nil, err
 		}
@@ -62,7 +63,6 @@ func callHalWithRetry(u *dream.Universe, path string, maxRetries int, retryDelay
 	return nil, fmt.Errorf("failed after %d retries, last error: %w", maxRetries, lastErr)
 }
 
-// isLookupError checks if the error is related to HTTP serviceable lookup
 func isLookupError(err error) bool {
 	if err == nil {
 		return false
@@ -71,4 +71,47 @@ func isLookupError(err error) bool {
 	return strings.Contains(errStr, "http serviceable lookup failed") ||
 		strings.Contains(errStr, "no HTTP match found") ||
 		strings.Contains(errStr, "looking up serviceable failed")
+}
+
+func waitForWebsiteInTNS(u *dream.Universe, fqdn string, maxRetries int, retryDelay time.Duration) error {
+	return waitForHTTPResourceInTNS(u, fqdn, websiteSpec.PathVariable, maxRetries, retryDelay)
+}
+
+func waitForFunctionInTNS(u *dream.Universe, fqdn string, maxRetries int, retryDelay time.Duration) error {
+	return waitForHTTPResourceInTNS(u, fqdn, functionSpec.PathVariable, maxRetries, retryDelay)
+}
+
+func waitForHTTPResourceInTNS(u *dream.Universe, fqdn string, resourceType common.PathVariable, maxRetries int, retryDelay time.Duration) error {
+	substrate := u.Substrate()
+	if substrate == nil {
+		return fmt.Errorf("substrate service not available")
+	}
+
+	tns := substrate.Tns()
+	if tns == nil {
+		return fmt.Errorf("TNS client not available from substrate service")
+	}
+
+	httpPath, err := methods.HttpPath(fqdn, resourceType)
+	if err != nil {
+		return fmt.Errorf("creating HTTP path failed: %w", err)
+	}
+
+	linksPath := httpPath.Versioning().Links()
+
+	for i := 0; i < maxRetries; i++ {
+		indexObject, err := tns.Fetch(linksPath)
+		if err == nil {
+			pathList, err := indexObject.Current(common.DefaultBranches)
+			if err == nil && len(pathList) > 0 {
+				return nil
+			}
+		}
+
+		if i < maxRetries-1 {
+			time.Sleep(retryDelay)
+		}
+	}
+
+	return fmt.Errorf("HTTP resource not available in TNS after %d retries", maxRetries)
 }

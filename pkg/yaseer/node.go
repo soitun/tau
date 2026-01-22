@@ -205,10 +205,28 @@ func (n *Query) List() ([]string, error) {
 	var val interface{}
 	err := n.Value(&val)
 	if err != nil {
+		path := "/" + pathUtils.Join(n.requestedPath)
+		st, statErr := n.seer.fs.Stat(path)
+		if statErr == nil && st.IsDir() {
+			dirFiles, err := afero.ReadDir(n.seer.fs, path)
+			if err != nil {
+				return nil, fmt.Errorf("listing directory `%s` failed with %w", path, err)
+			}
+
+			out := make([]string, 0)
+			for _, f := range dirFiles {
+				if f.IsDir() {
+					out = append(out, f.Name())
+				} else if item, ok := strings.CutSuffix(f.Name(), ".yaml"); ok {
+					out = append(out, item)
+				}
+			}
+			return out, nil
+		}
 		return nil, fmt.Errorf("listing keys failed with %s", err)
 	}
 
-	// Empty value should be an empty list
+	// Empty value should be returned as nil
 	if val == nil {
 		return nil, nil
 	}

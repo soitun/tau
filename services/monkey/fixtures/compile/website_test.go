@@ -11,12 +11,12 @@ import (
 	_ "github.com/taubyte/tau/clients/p2p/tns/dream"
 	commonIface "github.com/taubyte/tau/core/common"
 	"github.com/taubyte/tau/dream"
-	"github.com/taubyte/tau/pkg/config-compiler/decompile"
-	_ "github.com/taubyte/tau/pkg/config-compiler/fixtures"
 	structureSpec "github.com/taubyte/tau/pkg/specs/structure"
+	_ "github.com/taubyte/tau/pkg/tcc/taubyte/v1/fixtures"
 	"github.com/taubyte/tau/services/monkey/fixtures/compile"
 	_ "github.com/taubyte/tau/services/substrate/dream"
 	_ "github.com/taubyte/tau/services/tns/dream"
+	tcc "github.com/taubyte/tau/utils/tcc"
 	"gotest.tools/v3/assert"
 )
 
@@ -48,12 +48,15 @@ func TestWebsite(t *testing.T) {
 		return
 	}
 
-	project, err := decompile.MockBuild(testProjectId, "",
+	fs, _, err := tcc.GenerateProject(testProjectId,
 		&structureSpec.Website{
-			Id:      testWebsiteId,
-			Name:    "someWebsite",
-			Domains: []string{"someDomain"},
-			Paths:   []string{"/"},
+			Id:       testWebsiteId,
+			Name:     "someWebsite",
+			Domains:  []string{"someDomain"},
+			Paths:    []string{"/"},
+			Provider: "github",
+			RepoID:   "123456",
+			RepoName: "test/website",
 		},
 		&structureSpec.Domain{
 			Name: "someDomain",
@@ -65,7 +68,7 @@ func TestWebsite(t *testing.T) {
 		return
 	}
 
-	err = u.RunFixture("injectProject", project)
+	err = u.RunFixture("injectProject", fs)
 	if err != nil {
 		t.Error(err)
 		return

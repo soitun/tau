@@ -1,27 +1,25 @@
 package fixtures
 
 import (
+	"context"
 	"os"
 	"testing"
 
-	"github.com/spf13/afero"
 	_ "github.com/taubyte/tau/clients/p2p/tns/dream"
 	commonIface "github.com/taubyte/tau/core/common"
 	"github.com/taubyte/tau/dream"
 	commonTest "github.com/taubyte/tau/dream/helpers"
 	gitTest "github.com/taubyte/tau/dream/helpers/git"
-	"github.com/taubyte/tau/pkg/config-compiler/compile"
-	"github.com/taubyte/tau/pkg/config-compiler/decompile"
-	projectLib "github.com/taubyte/tau/pkg/schema/project"
 	specs "github.com/taubyte/tau/pkg/specs/methods"
+	tccCompiler "github.com/taubyte/tau/pkg/tcc/taubyte/v1"
+	tccDecompile "github.com/taubyte/tau/pkg/tcc/taubyte/v1/decompile"
 	_ "github.com/taubyte/tau/services/tns/dream"
 	"github.com/taubyte/tau/utils/maps"
+	tcc "github.com/taubyte/tau/utils/tcc"
 	"gotest.tools/v3/assert"
 )
 
 func TestDecompileProd(t *testing.T) {
-	t.Skip("using an old project")
-
 	m, err := dream.New(t.Context())
 	assert.NilError(t, err)
 	defer m.Close()
@@ -52,39 +50,66 @@ func TestDecompileProd(t *testing.T) {
 	tns, err := simple.TNS()
 	assert.NilError(t, err)
 
-	gitRoot := "./testGIT"
+	// Use a temporary directory to avoid modifying any existing testGIT directories
+	gitRoot, err := os.MkdirTemp("", "testGIT-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(gitRoot) // Clean up after test
 	gitRootConfig := gitRoot + "/prodConfigDream"
 	os.MkdirAll(gitRootConfig, 0755)
 
 	fakeMeta := commonTest.ConfigRepo.HookInfo
-	fakeMeta.Repository.SSHURL = "git@github.com:taubyte-test/tb_prodproject.git"
-	fakeMeta.Repository.Branch = "dream"
+	fakeMeta.Repository.Branch = "main" // Updated to match repository default branch
 	fakeMeta.Repository.Provider = "github"
 
-	err = gitTest.CloneToDir(u.Context(), gitRootConfig, commonTest.Repository{
-		ID:       517160737,
-		Name:     "tb_prodproject",
-		HookInfo: fakeMeta,
-	})
+	err = gitTest.CloneToDir(u.Context(), gitRootConfig, commonTest.ConfigRepo)
 	assert.NilError(t, err)
 
-	// read with seer
-	projectIface, err := projectLib.Open(projectLib.SystemFS(gitRootConfig))
+	// Create TCC compiler
+	compiler, err := tccCompiler.New(
+		tccCompiler.WithLocal(gitRootConfig),
+		tccCompiler.WithBranch(fakeMeta.Repository.Branch),
+	)
 	assert.NilError(t, err)
 
-	rc, err := compile.CompilerConfig(projectIface, fakeMeta, generatedDomainRegExp)
+	// Compile
+	obj, validations, err := compiler.Compile(context.Background())
 	assert.NilError(t, err)
 
-	compiler, err := compile.New(rc, compile.Dev())
+	// Extract project ID from validations
+	projectID, err := tcc.ExtractProjectID(validations)
 	assert.NilError(t, err)
 
-	err = compiler.Build()
+	// Process DNS validations (dev mode)
+	err = tcc.ProcessDNSValidations(
+		validations,
+		generatedDomainRegExp,
+		true, // dev mode
+		nil,  // no DV key needed in dev mode
+	)
 	assert.NilError(t, err)
 
-	err = compiler.Publish(tns)
+	// Extract object and indexes from Flat()
+	flat := obj.Flat()
+	object, ok := flat["object"].(map[string]interface{})
+	assert.Assert(t, ok, "object not found in flat result")
+
+	indexes, ok := flat["indexes"].(map[string]interface{})
+	assert.Assert(t, ok, "indexes not found in flat result")
+
+	// Publish to TNS
+	err = tcc.Publish(
+		tns,
+		object,
+		indexes,
+		projectID,
+		fakeMeta.Repository.Branch,
+		fakeMeta.HeadCommit.ID,
+	)
 	assert.NilError(t, err)
 
-	test_obj, err := tns.Fetch(specs.ProjectPrefix(projectIface.Get().Id(), fakeMeta.Repository.Branch, fakeMeta.HeadCommit.ID))
+	test_obj, err := tns.Fetch(specs.ProjectPrefix(projectID, fakeMeta.Repository.Branch, fakeMeta.HeadCommit.ID))
 	if test_obj.Interface() == nil {
 		t.Error("NO OBject found", err)
 		return
@@ -92,19 +117,36 @@ func TestDecompileProd(t *testing.T) {
 
 	maps.Display("", test_obj)
 
-	testProjectDir := "./testGIT/testDecompileProd"
-	os.RemoveAll(testProjectDir)
-	os.Mkdir(testProjectDir, 0777)
+	// Use a temporary directory for decompilation output
+	testProjectDir, err := os.MkdirTemp("", "testDecompileProd-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(testProjectDir) // Clean up after test
 
-	decompiler, err := decompile.New(afero.NewBasePathFs(afero.NewOsFs(), testProjectDir), test_obj.Interface())
+	// Convert the compiled object's flat structure to a TCC object for decompilation
+	// Note: We use the compiled object's flat structure (which includes both "object" and "indexes")
+	// rather than the fetched object from TNS, since the fetched object is just the "object" part
+	// and TCC decompiler expects the full structure with "object" and "indexes" as top-level children.
+	// This is consistent with how config_compiler_test.go handles decompilation.
+	objFlat := obj.Flat()
+
+	// Create a TCC object from the flat structure (which includes both object and indexes)
+	objCopy := tcc.MapToTCCObject(objFlat)
+
+	// Create TCC decompiler
+	decompiler, err := tccDecompile.New(tccDecompile.WithLocal(testProjectDir))
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
-	_, err = decompiler.Build()
+	// Decompile the object to filesystem
+	// Note: Decompile modifies the object in place, so we use the copy
+	err = decompiler.Decompile(objCopy)
 	if err != nil {
-		t.Error(err)
+		t.Errorf("decompilation failed: %v", err)
+		return
 	}
 
 }
