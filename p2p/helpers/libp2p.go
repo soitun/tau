@@ -2,6 +2,7 @@ package helpers
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -21,8 +22,8 @@ import (
 	pnet "github.com/libp2p/go-libp2p/core/pnet"
 	routing "github.com/libp2p/go-libp2p/core/routing"
 	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
+	"github.com/libp2p/go-libp2p/p2p/host/observedaddrs"
 	connmgr "github.com/libp2p/go-libp2p/p2p/net/connmgr"
-	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
 
 	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
@@ -45,7 +46,7 @@ func init() {
 	// affects dockerized setups mostly. This may announce non-dialable
 	// NATed addresses too eagerly, but they should progressively be
 	// cleaned up.
-	identify.ActivationThresh = 1
+	observedaddrs.ActivationThresh = 1
 	network.DialPeerTimeout = 120 * time.Second
 }
 
@@ -180,7 +181,7 @@ func SetupLibp2p(
 
 	h, err = libp2p.New(opts...)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("creating libp2p host failed: %w", err)
 	}
 
 	return h, idht, nil
@@ -290,7 +291,7 @@ func Bootstrap(ctx context.Context, h host.Host, dht routing.Routing, peers []pe
 
 	err := dht.Bootstrap(ctx)
 	if err != nil {
-		return peers, err
+		return peers, fmt.Errorf("DHT bootstrap failed: %w", err)
 	}
 
 	return peers, nil

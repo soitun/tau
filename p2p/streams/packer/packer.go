@@ -3,10 +3,20 @@ package packer
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
+	"sync"
 )
+
+var DefaultBufferSize = 32 * 1024
+
+// bufPool is used to reuse buffers for Stream operations to reduce GC pressure
+var bufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, DefaultBufferSize)
+		return &buf
+	},
+}
 
 type packer struct {
 	magic   Magic
@@ -42,38 +52,38 @@ func New(magic Magic, version Version) Packer {
 func (p packer) send(channel Channel, _type Type, w io.Writer, r io.Reader, length int64) error {
 	_, err := w.Write(p.magic[:])
 	if err != nil {
-		return err
+		return fmt.Errorf("writing magic bytes failed: %w", err)
 	}
 
 	err = binary.Write(w, binary.LittleEndian, p.version)
 	if err != nil {
-		return err
+		return fmt.Errorf("writing version failed: %w", err)
 	}
 
 	err = binary.Write(w, binary.LittleEndian, _type)
 	if err != nil {
-		return err
+		return fmt.Errorf("writing type failed: %w", err)
 	}
 
 	err = binary.Write(w, binary.LittleEndian, length)
 	if err != nil {
-		return err
+		return fmt.Errorf("writing length failed: %w", err)
 	}
 
 	err = binary.Write(w, binary.LittleEndian, channel)
 	if err != nil {
-		return err
+		return fmt.Errorf("writing channel failed: %w", err)
 	}
 
 	lr := io.LimitReader(r, length)
 
 	n, err := io.Copy(w, lr)
 	if n != length {
-		return io.ErrShortWrite
+		return fmt.Errorf("short write: expected %d bytes, wrote %d: %w", length, n, io.ErrShortWrite)
 	}
 
 	if err != nil {
-		return err
+		return fmt.Errorf("copying data failed: %w", err)
 	}
 
 	return nil
@@ -94,13 +104,21 @@ func (p packer) Stream(channel Channel, w io.Writer, r io.Reader, bufSize int) (
 		p.SendClose(channel, w, err)
 	}()
 
-	buf := make([]byte, bufSize)
+	bufPtr := bufPool.Get().(*[]byte)
+	buf := *bufPtr
+	if len(buf) < bufSize {
+		buf = make([]byte, bufSize)
+		bufPtr = &buf
+	} else {
+		buf = buf[:bufSize]
+	}
+	defer bufPool.Put(bufPtr)
 
 	for {
 		n, err = r.Read(buf)
 		l += int64(n)
 		if n > 0 {
-			err := p.Send(channel, w, bytes.NewBuffer(buf), int64(n))
+			err := p.Send(channel, w, bytes.NewBuffer(buf[:n]), int64(n))
 			if err != nil {
 				return l, fmt.Errorf("failed to send body payload with %w", err)
 			}
@@ -112,7 +130,6 @@ func (p packer) Stream(channel Channel, w io.Writer, r io.Reader, bufSize int) (
 			return l, fmt.Errorf("stream ended with %w", err)
 		}
 	}
-
 }
 
 func (p packer) SendClose(channel Channel, w io.Writer, err error) error {
@@ -125,99 +142,102 @@ func (p packer) SendClose(channel Channel, w io.Writer, err error) error {
 }
 
 func (p packer) Recv(r io.Reader, w io.Writer) (Channel, int64, error) {
-	_magic := make([]byte, 2)
-	_, err := r.Read(_magic)
-	if err != nil {
-		return 0, 0, err
+	var _magic [2]byte
+	if _, err := io.ReadFull(r, _magic[:]); err != nil {
+		return 0, 0, fmt.Errorf("reading magic bytes failed: %w", err)
 	}
 
 	if _magic[0] != p.magic[0] || _magic[1] != p.magic[1] {
-		return 0, 0, errors.New("wrong packer magic")
+		return 0, 0, fmt.Errorf("wrong packer magic: expected [%d %d], got [%d %d]", p.magic[0], p.magic[1], _magic[0], _magic[1])
 	}
 
 	var version Version
-	err = binary.Read(r, binary.LittleEndian, &version)
+	err := binary.Read(r, binary.LittleEndian, &version)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("reading version failed: %w", err)
 	}
 
 	if version != p.version {
-		return 0, 0, errors.New("wrong packer version")
+		return 0, 0, fmt.Errorf("wrong packer version: expected %d, got %d", p.version, version)
 	}
 
 	var _type Type
 	err = binary.Read(r, binary.LittleEndian, &_type)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("reading type failed: %w", err)
 	}
 
 	var length int64
 	err = binary.Read(r, binary.LittleEndian, &length)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("reading length failed: %w", err)
 	}
 
 	var channel Channel
 	err = binary.Read(r, binary.LittleEndian, &channel)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("reading channel failed: %w", err)
 	}
 
 	switch _type {
 	case TypeData:
 		lr := io.LimitReader(r, length)
 		n, err := io.Copy(w, lr)
+		if err != nil {
+			return channel, n, fmt.Errorf("copying data for channel %d failed: %w", channel, err)
+		}
 		return channel, n, err
 	case TypeClose:
 		if length == 0 {
 			return channel, 0, io.EOF
 		}
 		errMsg := make([]byte, length)
-		io.ReadFull(r, errMsg)
-		return channel, 0, errors.New(string(errMsg))
+		if _, err := io.ReadFull(r, errMsg); err != nil {
+			return channel, 0, fmt.Errorf("failed to read error message: %w", err)
+		}
+		return channel, 0, fmt.Errorf("packer close error: %s", string(errMsg))
 	}
 
-	return channel, 0, errors.New("unknown payload type")
+	return channel, 0, fmt.Errorf("unknown payload type: %d", _type)
 }
 
 // read next headers
 func (p packer) Next(r io.Reader) (Channel, int64, error) {
-	_magic := make([]byte, 2)
-	_, err := r.Read(_magic)
-	if err != nil {
-		return 0, 0, err
+	var _magic [2]byte
+	if _, err := io.ReadFull(r, _magic[:]); err != nil {
+		return 0, 0, fmt.Errorf("reading magic bytes failed: %w", err)
 	}
 
 	if _magic[0] != p.magic[0] || _magic[1] != p.magic[1] {
-		return 0, 0, errors.New("wrong packer magic")
+		return 0, 0, fmt.Errorf("wrong packer magic: expected [%d %d], got [%d %d]", p.magic[0], p.magic[1], _magic[0], _magic[1])
 	}
 
 	var version Version
-	err = binary.Read(r, binary.LittleEndian, &version)
+	err := binary.Read(r, binary.LittleEndian, &version)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("reading version failed: %w", err)
 	}
 
 	if version != p.version {
-		return 0, 0, errors.New("wrong packer version")
+		return 0, 0, fmt.Errorf("wrong packer version: expected %d, got %d", p.version, version)
 	}
 
 	var _type Type
 	err = binary.Read(r, binary.LittleEndian, &_type)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("reading type failed: %w", err)
 	}
 
 	var length int64
 	err = binary.Read(r, binary.LittleEndian, &length)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("reading length failed: %w", err)
 	}
 
 	var channel Channel
 	err = binary.Read(r, binary.LittleEndian, &channel)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("reading channel failed: %w", err)
 	}
 
 	if _type == TypeClose {
@@ -225,8 +245,10 @@ func (p packer) Next(r io.Reader) (Channel, int64, error) {
 			return channel, 0, io.EOF
 		}
 		errMsg := make([]byte, length)
-		io.ReadFull(r, errMsg)
-		return channel, 0, errors.New(string(errMsg))
+		if _, err := io.ReadFull(r, errMsg); err != nil {
+			return channel, 0, fmt.Errorf("failed to read error message: %w", err)
+		}
+		return channel, 0, fmt.Errorf("packer close error: %s", string(errMsg))
 	}
 
 	return channel, length, nil
